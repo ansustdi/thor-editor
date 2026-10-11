@@ -1,0 +1,56 @@
+# Local databases for driver integration tests:  docker compose up -d
+# then:  cd src-tauri && DBFORGE_IT=1 cargo test it_ -- --test-threads=1
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: Passw0rd!, POSTGRES_DB: test }
+    ports: ["55432:5432"]
+  mysql:
+    image: mysql:8.4
+    environment: { MYSQL_ROOT_PASSWORD: Passw0rd!, MYSQL_DATABASE: test }
+    ports: ["53306:3306"]
+  mariadb:
+    image: mariadb:11
+    environment: { MARIADB_ROOT_PASSWORD: Passw0rd!, MARIADB_DATABASE: test }
+    ports: ["53307:3306"]
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment: { ACCEPT_EULA: "Y", MSSQL_SA_PASSWORD: Passw0rd! }
+    ports: ["51433:1433"]
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.8
+    environment: { CLICKHOUSE_USER: test, CLICKHOUSE_PASSWORD: Passw0rd!, CLICKHOUSE_DB: test }
+    ports: ["58123:8123"]
+  redis:
+    image: redis:8-alpine
+    command: ["redis-server", "--requirepass", "Passw0rd!"]
+    ports: ["56379:6379"]
+  mongodb:
+    image: mongo:8
+    environment: { MONGO_INITDB_ROOT_USERNAME: root, MONGO_INITDB_ROOT_PASSWORD: Passw0rd! }
+    ports: ["57017:27017"]
+  neo4j:
+    image: neo4j:5-community
+    environment: { NEO4J_AUTH: neo4j/Passw0rd! }
+    ports: ["57687:7687"]
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    environment:
+      discovery.type: single-node
+      ELASTIC_PASSWORD: Passw0rd!
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    ports: ["59200:9200"]
+  janusgraph:
+    image: janusgraph/janusgraph:1.1.0
+    ports: ["58182:8182"]
+  sshd:
+    image: linuxserver/openssh-server:latest
+    environment: { PASSWORD_ACCESS: "true", USER_NAME: tunnel, USER_PASSWORD: Passw0rd!, DOCKER_MODS: "linuxserver/mods:openssh-server-ssh-tunnel" }
+    ports: ["52222:2222"]
+  oracle:
+    image: gvenzl/oracle-free:slim
+    environment: { ORACLE_PASSWORD: Passw0rd!, APP_USER: test, APP_USER_PASSWORD: Passw0rd! }
+    ports: ["51521:1521"]
+    profiles: [oracle]

@@ -1,0 +1,61 @@
+[package]
+name = "thor-editor"
+version = "0.1.0"
+description = "Lightweight multi-database editor"
+edition = "2021"
+
+[lib]
+name = "thor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+futures = "0.3"
+async-trait = "0.1"
+dashmap = "6"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+hex = "0.4"
+csv = "1"
+rust_xlsxwriter = { version = "0.90", features = ["constant_memory"] }
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
+
+tokio-postgres = "0.7"
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+mysql_async = "0.36"
+rusqlite = { version = "0.37", features = ["bundled", "column_decltype"] }
+tiberius = { version = "0.12", default-features = false, features = ["tds73", "native-tls", "chrono", "winauth"] }
+oracle = { version = "0.6", features = ["chrono"] }
+reqwest = { version = "0.12", default-features = false, features = ["native-tls", "json", "stream"] }
+redis = { version = "0.32", features = ["tokio-comp", "tokio-native-tls-comp"] }
+mongodb = "3"
+bson = { version = "2", features = ["chrono-0_4"] }
+neo4rs = "0.8"
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+base64 = "0.22"
+json5 = "0.4"
+calamine = { version = "0.30", features = ["dates"] }
+quick-xml = "0.38"
+russh = { version = "0.54", default-features = false, features = ["ring", "rsa", "flate2"] }
+url = "2"
+sqlparser = { version = "0.63.0", features = ["visitor"] }
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

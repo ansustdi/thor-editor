@@ -1,0 +1,9 @@
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
+*.log
+
+# Oracle Instant Client (downloaded by `npm run fetch:oracle`, bundled into the installer)
+src-tauri/resources/instantclient/
+*.tsbuildinfo
