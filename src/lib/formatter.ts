@@ -23,30 +23,39 @@ export interface FormatOptions {
 
 const CASE_SENSITIVE_NAMES = new Set<Dialect>(["clickhouse"]);
 
-/** Words the formatter may upper-case in a case-sensitive dialect: plain SQL keywords only. */
+/**
+ * Words the formatter may upper-case in a case-sensitive dialect: reserved SQL keywords that can't
+ * be bare column names. Keywords that double as common column names (`rows`, `database`, `table`,
+ * `engine`, `key`, `partition`, …) are deliberately left out and keep the user's spelling.
+ */
 const SAFE_KEYWORDS = new Set(
   (
     "SELECT FROM WHERE AND OR NOT AS ON JOIN LEFT RIGHT INNER OUTER FULL CROSS GROUP BY ORDER HAVING LIMIT OFFSET WITH " +
     "UNION ALL DISTINCT CASE WHEN THEN ELSE END IN IS NULL LIKE ILIKE BETWEEN EXISTS INSERT INTO VALUES UPDATE SET DELETE " +
-    "CREATE TABLE VIEW DROP ALTER CAST ASC DESC SETTINGS FORMAT PREWHERE FINAL SAMPLE ARRAY GLOBAL ANY USING INTERVAL TRUE " +
-    "FALSE IF EXCEPT INTERSECT ENGINE PARTITION PRIMARY KEY DATABASE OVER ROWS RANGE PRECEDING FOLLOWING CURRENT ROW " +
-    "UNBOUNDED TOTALS ROLLUP CUBE TOP TIES FILL STEP ASOF SEMI ANTI MATERIALIZED TEMPORARY REPLACE TRUNCATE RENAME NULLS FIRST LAST"
+    "CREATE DROP ALTER CAST ASC DESC PREWHERE USING INTERVAL TRUE FALSE EXCEPT INTERSECT OVER"
   ).split(" "),
 );
+
+const LITERAL_OR_WORD = /'(?:[^'\\]|\\.|'')*'|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*/g;
 
 /**
  * Undo case changes the formatter made to anything that isn't a plain SQL keyword (aliases such as
  * `s`, column names that look like keywords). String literals and quoted names are left alone.
  */
 function restoreCase(original: string, formatted: string): string {
+  const words = (s: string) => (s.match(LITERAL_OR_WORD) ?? []).filter((t) => /^[A-Za-z_]/.test(t));
+  const before = words(original);
+  // The formatter doesn't add, drop or reorder words, so the n-th word of the output is the n-th word
+  // of the input; that lets `rows` the column and `ROWS` the frame clause each keep their own spelling.
+  const aligned =
+    before.length === words(formatted).length &&
+    words(formatted).every((w, i) => w.toLowerCase() === before[i].toLowerCase());
   const spelled = new Map<string, string>();
-  const outside = (s: string) => s.replace(/'(?:[^'\\]|\\.|'')*'|"[^"]*"|`[^`]*`/g, " ");
-  for (const w of outside(original).match(/[A-Za-z_][\w$]*/g) ?? []) {
-    if (!spelled.has(w.toLowerCase())) spelled.set(w.toLowerCase(), w);
-  }
-  return formatted.replace(/'(?:[^'\\]|\\.|'')*'|"[^"]*"|`[^`]*`|[A-Za-z_][\w$]*/g, (tok) => {
+  for (const w of before) if (!spelled.has(w.toLowerCase())) spelled.set(w.toLowerCase(), w);
+  let i = 0;
+  return formatted.replace(LITERAL_OR_WORD, (tok) => {
     if (!/^[A-Za-z_]/.test(tok)) return tok; // literal / quoted identifier
-    const orig = spelled.get(tok.toLowerCase());
+    const orig = aligned ? before[i++] : spelled.get(tok.toLowerCase());
     if (!orig || orig === tok) return tok;
     return SAFE_KEYWORDS.has(tok.toUpperCase()) ? tok : orig;
   });
