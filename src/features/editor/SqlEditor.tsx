@@ -489,6 +489,8 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
     // Syntax errors / unknown tables / unknown alias.columns underlined while typing.
     const inspections = attachInspections(ed, monaco as unknown as typeof Monaco, () => connRef.current);
     ed.onDidDispose(() => inspections.dispose());
+    // Gutter run marks (spinner / check / cross).
+    runMarks.current = ed.createDecorationsCollection();
 
     // Toad-style navigation: Ctrl+hover underlines an object name, Ctrl+click / F4 opens it.
     attachObjectNavigation(ed, monaco as unknown as typeof Monaco, (text) => handlers.current.openObject(text));
