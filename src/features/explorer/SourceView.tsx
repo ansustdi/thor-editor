@@ -215,8 +215,11 @@ export function SourceView({ object, conn, focus, tabId }: { object: DbObject; c
     if (!word.includes(".")) {
       const named = (t: string) => outline(t).filter((m) => m.name.toLowerCase() === word.toLowerCase());
       const hits = named(model.getValue());
-      // From a declaration, jump on to the next one with that name (spec forward decl → body).
-      const target = hits.find((m) => m.line > line) ?? hits.find((m) => m.line !== line);
+      // Locals like `cur` / `temp_type` repeat in every procedure: the one in scope is the nearest
+      // declaration above the click. On a declaration itself (or with none above), go to the next one.
+      const above = hits.filter((m) => m.line < line).pop();
+      const onDecl = hits.some((m) => m.line === line);
+      const target = (!onDecl && above) || hits.find((m) => m.line > line) || hits.find((m) => m.line !== line);
       if (target) return goto(target.line);
       // Declared only in the other part (Spec ⇄ Body).
       const parts = src?.parts ?? [];

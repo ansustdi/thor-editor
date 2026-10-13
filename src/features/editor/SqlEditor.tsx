@@ -106,6 +106,8 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   const [plan, setPlan] = useState<{ sql: string; plan: Plan } | null>(null);
   const [output, setOutput] = useState<OutputBlock[]>([]);
   const [running, setRunning] = useState(false);
+  // Shortcuts (F9 / F5 / Ctrl+E) bypass the disabled toolbar buttons; one run per editor at a time.
+  const busy = useRef(false);
   const [progress, setProgress] = useState("");
   const [txPending, setTxPending] = useState(false);
   const [split, setSplit] = useState(0.5);
@@ -148,34 +150,39 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   const lineOf = (offset: number) => editorRef.current?.getModel()?.getPositionAt(offset).lineNumber;
 
   /** DataGrip-style gutter marks: spinner while a statement runs, then a check / cross. */
-  const runMarks = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
-  const marks = useRef<{ start: number; end: number; state: "running" | "ok" | "error"; note?: string }[]>([]);
-  const paintMarks = () => {
-    const model = editorRef.current?.getModel();
-    if (!model || !runMarks.current) return;
-    runMarks.current.set(
-      marks.current.flatMap((m) => {
-        const a = model.getPositionAt(m.start), b = model.getPositionAt(m.end);
-        const hover = m.note ? { glyphMarginHoverMessage: { value: m.note } } : {};
-        const glyph = {
-          range: { startLineNumber: a.lineNumber, startColumn: 1, endLineNumber: a.lineNumber, endColumn: 1 },
-          options: { glyphMarginClassName: `run-mark run-mark-${m.state}`, stickiness: 1, ...hover },
-        };
-        if (m.state !== "running") return [glyph];
-        const body = {
-          range: { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column },
-          options: { className: "run-mark-body", stickiness: 1 },
-        };
-        return [glyph, body];
-      }),
-    );
+  // One collection per statement, so Monaco keeps tracking each mark through edits made mid-run.
+  const marks = useRef(new Map<number, Monaco.editor.IEditorDecorationsCollection>());
+  const clearMarks = () => {
+    marks.current.forEach((c) => c.clear());
+    marks.current.clear();
   };
   const setMark = (start: number, end: number, state: "running" | "ok" | "error", note?: string) => {
-    const i = marks.current.findIndex((m) => m.start === start);
-    const m = { start, end, state, note };
-    if (i >= 0) marks.current[i] = m;
-    else marks.current.push(m);
-    paintMarks();
+    const ed = editorRef.current;
+    const model = ed?.getModel();
+    if (!ed || !model) return;
+    let coll = marks.current.get(start);
+    // Once placed, follow the decoration (it moved with any edits) rather than the stale offsets.
+    const [glyphAt, bodyAt] = [coll?.getRange(0), coll?.getRange(1)];
+    const a = model.getPositionAt(start), b = model.getPositionAt(end);
+    const line = glyphAt?.startLineNumber ?? a.lineNumber;
+    const hover = note ? { glyphMarginHoverMessage: { value: note } } : {};
+    const decos: Monaco.editor.IModelDeltaDecoration[] = [
+      {
+        range: { startLineNumber: line, startColumn: 1, endLineNumber: line, endColumn: 1 },
+        options: { glyphMarginClassName: `run-mark run-mark-${state}`, stickiness: 1, ...hover },
+      },
+    ];
+    if (state === "running") {
+      decos.push({
+        range: bodyAt ?? { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column },
+        options: { className: "run-mark-body", stickiness: 1 },
+      });
+    }
+    if (!coll) {
+      coll = ed.createDecorationsCollection();
+      marks.current.set(start, coll);
+    }
+    coll.set(decos);
   };
 
   const revealRange = (r: { start: number; end: number }) => {
@@ -245,10 +252,10 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
    * keeps going after failures (Toad's script mode). DBMS_OUTPUT is collected after each statement.
    */
   const exec = async (stmts: Stmt[], opts: { replace: boolean; maxRows?: number; script?: boolean }) => {
-    if (!stmts.length) return;
+    if (!stmts.length || busy.current) return;
+    busy.current = true;
     setRunning(true);
-    marks.current = [];
-    paintMarks();
+    clearMarks();
     const continueOnError = !!opts.script && settings.scriptOnError === "continue";
     const fresh: ResultTab[] = [];
     let lastTab: string | null = null;
@@ -338,6 +345,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
         }
       }
     } finally {
+      busy.current = false;
       setRunning(false);
       setProgress("");
     }
@@ -377,13 +385,14 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   };
 
   const runStatement = () => {
+    if (busy.current) return;
     const s = currentStatement();
     if (s) exec([s], { replace: true });
   };
 
   const runScript = () => {
     const ed = editorRef.current;
-    if (!ed) return;
+    if (!ed || busy.current) return;
     const model = ed.getModel()!;
     const sel = ed.getSelection();
     const partial = sel && !sel.isEmpty();
@@ -395,9 +404,11 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   };
 
   const explain = async () => {
+    if (busy.current) return;
     const s = currentStatement();
     if (!s) return;
     if (dialect === "oracle" || dialect === "postgres") {
+      busy.current = true;
       setRunning(true);
       try {
         const p = await api.explainPlan(conn.info.sessionId, s.sql);
@@ -408,6 +419,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
         addLog(errorText(e), false);
         setActiveResult("log");
       } finally {
+        busy.current = false;
         setRunning(false);
       }
       return;
@@ -489,8 +501,6 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
     // Syntax errors / unknown tables / unknown alias.columns underlined while typing.
     const inspections = attachInspections(ed, monaco as unknown as typeof Monaco, () => connRef.current);
     ed.onDidDispose(() => inspections.dispose());
-    // Gutter run marks (spinner / check / cross).
-    runMarks.current = ed.createDecorationsCollection();
 
     // Toad-style navigation: Ctrl+hover underlines an object name, Ctrl+click / F4 opens it.
     attachObjectNavigation(ed, monaco as unknown as typeof Monaco, (text) => handlers.current.openObject(text));
@@ -753,6 +763,8 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
                 fetchEdges={graphDb ? fetchEdges : undefined}
                 onExport={() => setExportFor(active)}
                 onFetchAll={async () => {
+                  if (busy.current) return;
+                  busy.current = true;
                   setRunning(true);
                   try {
                     const r = await api.execute(conn.info.sessionId, active.sql, 0);
@@ -761,6 +773,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
                   } catch (e) {
                     addLog(errorText(e), false);
                   } finally {
+                    busy.current = false;
                     setRunning(false);
                   }
                 }}

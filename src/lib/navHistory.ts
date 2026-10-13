@@ -72,8 +72,8 @@ function step(from: NavLoc[], to: NavLoc[]) {
     } finally {
       stepping = false;
     }
-    // Let a hidden tab become visible (and its editor lay out) before moving the caret.
-    setTimeout(() => sites.get(loc.tabId)?.restore(loc), 0);
+    // Let a hidden tab become visible (React render, then Monaco layout) before moving the caret.
+    requestAnimationFrame(() => requestAnimationFrame(() => sites.get(loc.tabId)?.restore(loc)));
     return;
   }
 }
