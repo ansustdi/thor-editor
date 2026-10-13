@@ -30,7 +30,8 @@ import { ExportDialog } from "../export/ExportDialog";
 import { ResultGrid } from "../grid/ResultGrid";
 import { modelConn, registerCompletion } from "./completion";
 import { attachInspections } from "./inspections";
-import { identifierAt, resolveIdentifier } from "./navigate";
+import { attachObjectNavigation, isKeyword, resolveIdentifier } from "./navigate";
+import { registerNavSite } from "../../lib/navHistory";
 import type * as Monaco from "monaco-editor/editor/editor.api";
 
 interface ResultTab {
@@ -146,6 +147,37 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   /** 1-based editor line of an absolute model offset. */
   const lineOf = (offset: number) => editorRef.current?.getModel()?.getPositionAt(offset).lineNumber;
 
+  /** DataGrip-style gutter marks: spinner while a statement runs, then a check / cross. */
+  const runMarks = useRef<Monaco.editor.IEditorDecorationsCollection | null>(null);
+  const marks = useRef<{ start: number; end: number; state: "running" | "ok" | "error"; note?: string }[]>([]);
+  const paintMarks = () => {
+    const model = editorRef.current?.getModel();
+    if (!model || !runMarks.current) return;
+    runMarks.current.set(
+      marks.current.flatMap((m) => {
+        const a = model.getPositionAt(m.start), b = model.getPositionAt(m.end);
+        const hover = m.note ? { glyphMarginHoverMessage: { value: m.note } } : {};
+        const glyph = {
+          range: { startLineNumber: a.lineNumber, startColumn: 1, endLineNumber: a.lineNumber, endColumn: 1 },
+          options: { glyphMarginClassName: `run-mark run-mark-${m.state}`, stickiness: 1, ...hover },
+        };
+        if (m.state !== "running") return [glyph];
+        const body = {
+          range: { startLineNumber: a.lineNumber, startColumn: a.column, endLineNumber: b.lineNumber, endColumn: b.column },
+          options: { className: "run-mark-body", stickiness: 1 },
+        };
+        return [glyph, body];
+      }),
+    );
+  };
+  const setMark = (start: number, end: number, state: "running" | "ok" | "error", note?: string) => {
+    const i = marks.current.findIndex((m) => m.start === start);
+    const m = { start, end, state, note };
+    if (i >= 0) marks.current[i] = m;
+    else marks.current.push(m);
+    paintMarks();
+  };
+
   const revealRange = (r: { start: number; end: number }) => {
     const ed = editorRef.current;
     const model = ed?.getModel();
@@ -178,6 +210,28 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   // Toad-style olive colour for names of existing tables / views / packages.
   useObjectHighlight(editorInst, conn.key, isSql(dialect) && (settings.highlightObjects ?? true));
 
+  // Back / forward (Alt+Left / Alt+Right) returns to the caret position in this editor.
+  useEffect(
+    () =>
+      registerNavSite(tab.id, {
+        here: () => {
+          const p = editorRef.current?.getPosition();
+          return p ? { line: p.lineNumber, column: p.column } : null;
+        },
+        restore: (loc) => {
+          const ed = editorRef.current;
+          if (!ed) return;
+          if (loc.line) {
+            const p = { lineNumber: loc.line, column: loc.column ?? 1 };
+            ed.setPosition(p);
+            ed.revealPositionInCenterIfOutsideViewport(p);
+          }
+          ed.focus();
+        },
+      }),
+    [tab.id],
+  );
+
   const resultsRef = useRef(results);
   resultsRef.current = results;
   // release server-side result buffers when the tab unmounts
@@ -193,6 +247,8 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
   const exec = async (stmts: Stmt[], opts: { replace: boolean; maxRows?: number; script?: boolean }) => {
     if (!stmts.length) return;
     setRunning(true);
+    marks.current = [];
+    paintMarks();
     const continueOnError = !!opts.script && settings.scriptOnError === "continue";
     const fresh: ResultTab[] = [];
     let lastTab: string | null = null;
@@ -230,10 +286,12 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
           }
         }
         const t0 = performance.now();
+        setMark(s.start, s.end, "running");
         try {
           const r = await api.execute(conn.info.sessionId, sql, opts.maxRows ?? settings.fetchSize);
           const ms = Math.round(performance.now() - t0);
           done++;
+          setMark(s.start, s.end, "ok", `Executed in ${r.elapsedMs} ms${r.columns.length ? ` — ${r.rows.length.toLocaleString()} row(s)` : ""}`);
           if (r.notice) addLog(`⚠ ${r.notice}`, false);
           if (conn.status === "lost" || r.notice) setConnStatus(conn.key, "ok", r.notice ? "Reconnected" : undefined);
           addHistory({ sql, conn: conn.profile.id, at: new Date().toISOString(), ms, ok: true });
@@ -260,6 +318,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
           errors++;
           addHistory({ sql, conn: conn.profile.id, at: new Date().toISOString(), ms: 0, ok: false });
           const msg = errorText(e);
+          setMark(s.start, s.end, "error", msg.split("\n")[0]);
           if (msg.includes("Reconnect failed")) setConnStatus(conn.key, "lost", msg);
           else if (msg.includes("has been re-established")) setConnStatus(conn.key, "ok", "Reconnected");
           addLog(`${line ? `Line ${line}: ` : ""}${msg}\n  at: ${sql.slice(0, 200)}`, false, where);
@@ -406,7 +465,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
 
   // Keep latest handlers for Monaco commands registered once.
   const openObject = async (text: string) => {
-    if (/^(select|from|where|and|or|not|in|is|null|join|left|right|inner|outer|on|as|by|group|order|having|insert|into|update|delete|set|values|with|union|all|distinct|case|when|then|else|end|begin|declare)$/i.test(text)) return;
+    if (isKeyword(text)) return;
     const obj = await resolveIdentifier(conn, text, editorRef.current?.getValue() ?? "");
     if (!obj) {
       addLog(`Object not found: ${text}`, false);
@@ -432,29 +491,12 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
     ed.onDidDispose(() => inspections.dispose());
 
     // Toad-style navigation: Ctrl+hover underlines an object name, Ctrl+click / F4 opens it.
-    const link = ed.createDecorationsCollection();
-    ed.onMouseMove((e) => {
-      const pos = e.target.position;
-      const hit = e.event.ctrlKey && pos ? identifierAt(ed.getModel()!, pos) : null;
-      link.set(hit ? [{ range: hit.range, options: { inlineClassName: "ctrl-object-link" } }] : []);
-    });
-    ed.onKeyUp((e) => e.keyCode === monaco.KeyCode.Ctrl && link.clear());
-    ed.onMouseDown((e) => {
-      if (!e.event.ctrlKey || !e.target.position) return;
-      const hit = identifierAt(ed.getModel()!, e.target.position);
-      if (!hit) return;
-      e.event.preventDefault();
-      handlers.current.openObject(hit.text);
-    });
+    attachObjectNavigation(ed, monaco as unknown as typeof Monaco, (text) => handlers.current.openObject(text));
     // Per-editor actions. NOT ed.addCommand: Monaco registers those in a keybinding service shared by
     // every editor, so the most recently created tab's handler wins — F9 in "SQL 1" would run "SQL 2".
     const bind = (id: string, label: string, keys: number[], run: () => void) =>
       ed.addAction({ id: `thor.${id}`, label, keybindings: keys, run: () => run() });
     const K = monaco.KeyCode, M = monaco.KeyMod;
-    bind("openObject", "Open object at cursor", [K.F4], () => {
-      const hit = identifierAt(ed.getModel()!, ed.getPosition()!);
-      if (hit) handlers.current.openObject(hit.text);
-    });
     bind("runStatement", "Execute statement", [M.CtrlCmd | K.Enter, K.F9], () => handlers.current.runStatement());
     bind("runScript", "Execute as script", [K.F5, M.CtrlCmd | M.Shift | K.Enter], () => handlers.current.runScript());
     bind("format", "Format SQL", [M.CtrlCmd | M.Shift | K.KeyF], () => handlers.current.format());
@@ -576,6 +618,7 @@ export function SqlEditor({ tab, conn }: { tab: Extract<EditorTab, { kind: "sql"
               fontSize: settings.fontSize,
               fontFamily: '"Cascadia Code", "JetBrains Mono", Consolas, monospace',
               minimap: { enabled: false },
+              glyphMargin: true,
               automaticLayout: true,
               scrollBeyondLastLine: false,
               wordWrap: "off",

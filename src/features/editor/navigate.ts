@@ -20,10 +20,50 @@ export function identifierAt(model: Monaco.editor.ITextModel, pos: Monaco.Positi
   return null;
 }
 
+const KEYWORD = /^(select|from|where|and|or|not|in|is|null|join|left|right|inner|outer|on|as|by|group|order|having|insert|into|update|delete|set|values|with|union|all|distinct|case|when|then|else|end|begin|declare|if|loop|for|return|cursor|type|procedure|function|package|body|exception|varchar2|number|date)$/i;
+
+/** True for words that are never worth resolving as objects. */
+export const isKeyword = (text: string) => KEYWORD.test(text);
+
+/**
+ * Toad-style navigation in a Monaco editor: Ctrl+hover underlines an identifier, Ctrl+click / F4 opens it.
+ * Uses ed.addAction (scoped to this editor), not addCommand (shared by every editor).
+ */
+export function attachObjectNavigation(
+  ed: Monaco.editor.IStandaloneCodeEditor,
+  monaco: typeof Monaco,
+  open: (text: string, line: number) => void,
+): void {
+  const link = ed.createDecorationsCollection();
+  ed.onMouseMove((e) => {
+    const pos = e.target.position;
+    const hit = e.event.ctrlKey && pos ? identifierAt(ed.getModel()!, pos) : null;
+    link.set(hit ? [{ range: hit.range, options: { inlineClassName: "ctrl-object-link" } }] : []);
+  });
+  ed.onKeyUp((e) => e.keyCode === monaco.KeyCode.Ctrl && link.clear());
+  ed.onMouseDown((e) => {
+    if (!e.event.ctrlKey || !e.target.position) return;
+    const hit = identifierAt(ed.getModel()!, e.target.position);
+    if (!hit) return;
+    e.event.preventDefault();
+    open(hit.text, e.target.position.lineNumber);
+  });
+  ed.addAction({
+    id: "thor.openObject",
+    label: "Open object at cursor",
+    keybindings: [monaco.KeyCode.F4],
+    run: () => {
+      const pos = ed.getPosition()!;
+      const hit = identifierAt(ed.getModel()!, pos);
+      if (hit) open(hit.text, pos.lineNumber);
+    },
+  });
+}
+
 const unquote = (s: string) => (s.startsWith('"') ? s.slice(1, -1) : s);
 
 /** Finds the database object an identifier refers to (alias → table, schema.name, synonyms). */
-export async function resolveIdentifier(conn: Connection, text: string, sqlText: string): Promise<DbObject | null> {
+export async function resolveIdentifier(conn: Connection, text: string, sqlText: string, defaultSchema?: string): Promise<DbObject | null> {
   const st = useApp.getState();
   const d = conn.info.dialect;
   let parts = text.split(".").map((p) => unquote(p.trim()));
@@ -35,7 +75,8 @@ export async function resolveIdentifier(conn: Connection, text: string, sqlText:
   }
   // package.member → the package
   const name = parts.length >= 2 ? parts[1] : parts[0];
-  const schema = parts.length >= 2 ? parts[0] : conn.info.currentSchema;
+  const home = defaultSchema ?? conn.info.currentSchema;
+  const schema = parts.length >= 2 ? parts[0] : home;
   const eq = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
   const lookIn = async (sch: string): Promise<DbObject | null> => {
@@ -60,7 +101,7 @@ export async function resolveIdentifier(conn: Connection, text: string, sqlText:
 
   // qualifier might have been "package.member": try the first part as the object name
   if (parts.length === 2) {
-    const asPkg = (st.objects[conn.key]?.[conn.info.currentSchema] ?? []).find((o) => eq(o.name, parts[0]));
+    const asPkg = (st.objects[conn.key]?.[home] ?? []).find((o) => eq(o.name, parts[0]));
     if (asPkg) return asPkg;
   }
 
@@ -69,7 +110,7 @@ export async function resolveIdentifier(conn: Connection, text: string, sqlText:
     const r = await api.resolveObject(conn.info.sessionId, up(schemaKey), up(name)).catch(() => null);
     if (r) return r;
     if (parts.length === 2) {
-      return api.resolveObject(conn.info.sessionId, up(conn.info.currentSchema), up(parts[0])).catch(() => null);
+      return api.resolveObject(conn.info.sessionId, up(home), up(parts[0])).catch(() => null);
     }
   }
   return null;

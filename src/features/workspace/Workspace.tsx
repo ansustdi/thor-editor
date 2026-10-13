@@ -97,7 +97,7 @@ export function Workspace({ conn, visible }: { conn: Connection; visible: boolea
               ) : t.kind === "sessions" ? (
                 <SessionBrowser conn={conn} visible={visible && active === t.id} />
               ) : (
-                <ObjectView object={t.object} conn={conn} onImport={onImport} initialView={t.view} focus={t.focus} />
+                <ObjectView object={t.object} conn={conn} onImport={onImport} initialView={t.view} focus={t.focus} tabId={t.id} />
               )}
               </ErrorBoundary>
             </div>

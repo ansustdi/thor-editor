@@ -11,12 +11,15 @@ import { describeTarget, engineInfo } from "./lib/engines";
 import { api, onSessionReconnected } from "./lib/ipc";
 import { useApplyTheme, useThemeColors } from "./lib/theme";
 import { useApp, uid } from "./store/app";
+import { installNavKeys } from "./lib/navHistory";
 
 export default function App() {
   const s = useApp();
   const colors = useThemeColors();
   const [comparing, setComparing] = useState(false);
   useApplyTheme(s.settings.theme);
+  // Alt+Left / Alt+Right (and mouse back / forward) move through the navigation history.
+  useEffect(() => installNavKeys(), []);
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {

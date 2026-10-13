@@ -6,9 +6,11 @@ import type * as Monaco from "monaco-editor/editor/editor.api";
 import { Button, Input, Spinner } from "../../components/ui";
 import { api, errorText, type DbObject, type ObjectSource } from "../../lib/ipc";
 import { monaco } from "../../lib/monaco";
+import { navRecord, registerNavSite } from "../../lib/navHistory";
 import { useThemeColors } from "../../lib/theme";
 import { editorTheme, useObjectHighlight } from "../../lib/editorTheme";
 import { useApp, uid, type Connection, type SourceFocus } from "../../store/app";
+import { attachObjectNavigation, isKeyword, resolveIdentifier } from "../editor/navigate";
 
 export interface Member {
   kind: "procedure" | "function" | "cursor" | "type";
@@ -56,7 +58,7 @@ export function MemberBadge({ kind }: { kind: Member["kind"] }) {
   );
 }
 
-export function SourceView({ object, conn, focus }: { object: DbObject; conn: Connection; focus?: SourceFocus }) {
+export function SourceView({ object, conn, focus, tabId }: { object: DbObject; conn: Connection; focus?: SourceFocus; tabId?: string }) {
   const colors = useThemeColors();
   const { settings, openTab } = useApp();
   const [src, setSrc] = useState<ObjectSource | null>(null);
@@ -134,13 +136,52 @@ export function SourceView({ object, conn, focus }: { object: DbObject; conn: Co
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus?.seq, src, active, edInst]);
 
-  const goto = (line: number, col = 1) => {
+  const place = (line: number, col = 1) => {
     const ed = edRef.current;
     if (!ed) return;
     ed.revealLineInCenter(line);
     ed.setPosition({ lineNumber: line, column: col });
     ed.focus();
   };
+  /** Jump inside this unit; Alt+Left comes back here. */
+  const goto = (line: number, col = 1) => {
+    navRecord();
+    place(line, col);
+  };
+
+  // Spec ⇄ Body: switch parts first, then place the caret once that part's editor is mounted.
+  const pending = useRef<{ line: number; col: number } | null>(null);
+  const jumpTo = (idx: number, line: number, col = 1) => {
+    if (idx === active && edPart.current === idx && edRef.current) return place(line, col);
+    pending.current = { line, col };
+    setActive(idx);
+  };
+  useEffect(() => {
+    const p = pending.current;
+    if (!p || !edInst || edPart.current !== active) return;
+    pending.current = null;
+    place(p.line, p.col);
+  }, [edInst, active]);
+
+  // Back / forward (Alt+Left / Alt+Right) across tabs and parts.
+  const navState = useRef({ src, active, jumpTo });
+  navState.current = { src, active, jumpTo };
+  useEffect(() => {
+    if (!tabId) return;
+    return registerNavSite(tabId, {
+      here: () => {
+        const pos = edRef.current?.getPosition();
+        const { src: s, active: a } = navState.current;
+        return pos ? { part: s?.parts[a]?.label, line: pos.lineNumber, column: pos.column } : null;
+      },
+      restore: (loc) => {
+        const { src: s, active: a, jumpTo: jump } = navState.current;
+        if (!loc.line) return edRef.current?.focus();
+        const idx = loc.part ? (s?.parts.findIndex((p) => p.label === loc.part) ?? -1) : a;
+        jump(idx < 0 ? a : idx, loc.line, loc.column);
+      },
+    });
+  }, [tabId]);
 
   const compile = async () => {
     if (!part) return;
@@ -163,10 +204,50 @@ export function SourceView({ object, conn, focus }: { object: DbObject; conn: Co
     }
   };
 
-  const onMount: OnMount = (ed) => {
+  /**
+   * Toad: Ctrl+click / F4 on a name in package source. Members of this unit jump to their declaration;
+   * anything else (tables, views, other packages…) opens in its own tab.
+   */
+  const openObject = async (word: string, line: number) => {
+    if (isKeyword(word)) return;
+    const model = edRef.current?.getModel();
+    if (!model) return;
+    if (!word.includes(".")) {
+      const named = (t: string) => outline(t).filter((m) => m.name.toLowerCase() === word.toLowerCase());
+      const hits = named(model.getValue());
+      // From a declaration, jump on to the next one with that name (spec forward decl → body).
+      const target = hits.find((m) => m.line > line) ?? hits.find((m) => m.line !== line);
+      if (target) return goto(target.line);
+      // Declared only in the other part (Spec ⇄ Body).
+      const parts = src?.parts ?? [];
+      for (let i = 0; i < parts.length; i++) {
+        if (i === active) continue;
+        const other = named(edited[i] ?? parts[i].text)[0];
+        if (other) {
+          navRecord();
+          return jumpTo(i, other.line);
+        }
+      }
+    }
+    // Aliases only make sense inside the surrounding statement, not across the whole package.
+    const from = Math.max(1, line - 80), to = Math.min(model.getLineCount(), line + 80);
+    const around = model.getValueInRange({ startLineNumber: from, startColumn: 1, endLineNumber: to, endColumn: model.getLineMaxColumn(to) });
+    const obj = await resolveIdentifier(conn, word, around, object.schema);
+    if (!obj) {
+      setMsg({ ok: false, text: `Object not found: ${word}` });
+      return;
+    }
+    if (obj.name === object.name && obj.schema === object.schema) return;
+    openTab({ id: uid(), connKey: conn.key, kind: "object", title: obj.name, object: obj, view: "ddl" });
+  };
+  const openRef = useRef(openObject);
+  openRef.current = openObject;
+
+  const onMount: OnMount = (ed, m) => {
     edRef.current = ed;
     edPart.current = active;
     setEdInst(ed);
+    attachObjectNavigation(ed, m as unknown as typeof Monaco, (word, line) => openRef.current(word, line));
     // addAction is scoped to this editor (addCommand would be shared across all editors).
     ed.addAction({ id: "thor.compile", label: "Compile", keybindings: [monaco.KeyCode.F9], run: () => compileRef.current() });
   };

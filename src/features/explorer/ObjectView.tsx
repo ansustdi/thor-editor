@@ -26,12 +26,14 @@ export function ObjectView({
   onImport,
   initialView,
   focus,
+  tabId,
 }: {
   object: DbObject;
   conn: Connection;
   onImport?: (schema: string, table?: string) => void;
   initialView?: View;
   focus?: SourceFocus;
+  tabId?: string;
 }) {
   const d = conn.info.dialect;
   const fetchEdges = useCallback((ids: string[]) => api.graphEdges(conn.info.sessionId, ids), [conn.info.sessionId]);
@@ -259,7 +261,7 @@ export function ObjectView({
             </div>
           </div>
         )}
-        {view === "ddl" && plsql && <SourceView object={object} conn={conn} focus={focus} />}
+        {view === "ddl" && plsql && <SourceView object={object} conn={conn} focus={focus} tabId={tabId} />}
         {view === "ddl" && !plsql && ddl !== null && (
           <div className="flex h-full flex-col">
             <div className="flex items-center gap-1 border-b border-line bg-panel px-2 py-1">

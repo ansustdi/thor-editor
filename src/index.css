@@ -110,3 +110,46 @@ select {
 .monaco-editor .ctrl-object-link {
   color: var(--accent) !important;
 }
+
+/* DataGrip-style execution marks in the editor gutter */
+.monaco-editor .run-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.monaco-editor .run-mark::before {
+  content: "";
+  display: block;
+  box-sizing: border-box;
+}
+.monaco-editor .run-mark-running::before {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: run-mark-spin 0.7s linear infinite;
+}
+.monaco-editor .run-mark-ok::before {
+  width: 5px;
+  height: 10px;
+  margin-top: -3px;
+  border: solid #3fa34d;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.monaco-editor .run-mark-error::before {
+  content: "✕";
+  color: #e5484d;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.monaco-editor .run-mark-body {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+@keyframes run-mark-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
